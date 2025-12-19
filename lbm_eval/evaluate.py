@@ -444,6 +444,7 @@ def _run(
     num_evaluations: int,
     num_processes: int,
     server_uri: str,
+    start_index: int = 0,
     # For unit testing only.
     t_max: float = None,
 ) -> EvaluationResults:
@@ -458,7 +459,7 @@ def _run(
             t_max=t_max,
         )
         for skill_type in skill_types
-        for scenario_index in range(num_evaluations)
+        for scenario_index in range(start_index, start_index + num_evaluations)
     ]
 
     progress_bar = None
@@ -513,6 +514,14 @@ def main():
         metavar="N",
         default=10,
         help="The number of evaluations to run per skill. "
+        "(Defaults to %(default)s.)",
+    )
+    parser.add_argument(
+        "--start_index",
+        type=int,
+        metavar="N",
+        default=0,
+        help="The starting scenario index for evaluations. "
         "(Defaults to %(default)s.)",
     )
     parser.add_argument(
