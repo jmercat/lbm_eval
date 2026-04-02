@@ -129,10 +129,7 @@ def _configure_logging() -> None:
 
 def _get_json_path(output_directory: Path) -> Path:
     """Returns a path to a JSON file for storing evaluation results."""
-    timestamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
-    json_file = f"results-{timestamp}.json"
-    json_path = output_directory / json_file
-    return json_path
+    return output_directory / "results.json"
 
 
 def _save_json(
@@ -165,6 +162,37 @@ class _LastStepRecorder(NoopRecorder):
 
     def record_step(self, time_step_prev, act, time_step):
         self.last_time_step = time_step
+
+
+class _CombinedRecorder(NoopRecorder):
+    """Dispatches to multiple recorders."""
+
+    def __init__(self, recorders):
+        self._recorders = recorders
+
+    def start_recording(self, *, seed=None, options=None):
+        for r in self._recorders:
+            r.start_recording(seed=seed, options=options)
+
+    def record_initial(self, time_step):
+        for r in self._recorders:
+            r.record_initial(time_step)
+
+    def record_step(self, time_step_prev, act, time_step):
+        for r in self._recorders:
+            r.record_step(time_step_prev, act, time_step)
+
+    def stop_recording(self):
+        for r in self._recorders:
+            r.stop_recording()
+
+    def save_recording(self, final_info):
+        for r in self._recorders:
+            r.save_recording(final_info)
+
+    def abort_recording(self):
+        for r in self._recorders:
+            r.abort_recording()
 
 
 def _get_known_skill_paths() -> dict[str, Path]:
@@ -202,6 +230,9 @@ def evaluate_one(
     server_uri: str = LbmPolicyClientConfig().server_uri,
     use_rpc: bool = True,
     policy: Policy = None,
+    record_video: bool = False,
+    video_camera: list[str] | None = None,
+    video_fps: int = 10,
 ) -> SingleEvaluationResult:
     """Perform a single evaluation of a policy against a scenario.
 
@@ -226,6 +257,13 @@ def evaluate_one(
     The `use_rpc` should nearly always be set to True. Some unit tests will set
     it to False for certain kinds of experiments, in which case the `policy`
     argument must be used to provide the policy serving API.
+
+    If `record_video` is True, MP4 videos of the evaluation will be saved
+    alongside the demonstration artifacts.  `video_camera` is a list of
+    camera names to record; use ``"mosaic"`` for a grid of all cameras
+    and ``"all"`` for every individual camera.  When None or empty,
+    defaults to ``["mosaic"]``.  `video_fps` controls the output frame
+    rate (default 10).
     """
     # Wrap the evaluation logic in a try-except so that we can reify exceptions
     # into a SingleEvaluationResult with the details.
@@ -239,6 +277,9 @@ def evaluate_one(
             server_uri=server_uri,
             use_rpc=use_rpc,
             policy=policy,
+            record_video=record_video,
+            video_camera=video_camera,
+            video_fps=video_fps,
         )
     except Exception:
         string_file = io.StringIO()
@@ -263,6 +304,9 @@ def _evaluate_one_impl(
     server_uri: str,
     use_rpc: bool,
     policy: Policy,
+    record_video: bool = False,
+    video_camera: list[str] | None = None,
+    video_fps: int = 10,
 ) -> SingleEvaluationResult:
     """The implementation of evaluate_one."""
     # Find the skill_type within our known packages. Packages that contain
@@ -305,7 +349,22 @@ def _evaluate_one_impl(
     env_config.simulation_scenario_package = "anzu.sim.station.open_source"
 
     anzu_env = env_config.create()
-    recorder = _LastStepRecorder()
+    last_step_recorder = _LastStepRecorder()
+    if record_video:
+        from lbm_eval.video_recorder import VideoRecorder
+
+        video_dir = (
+            output_directory / skill_type / f"demonstration_{scenario_index}"
+        )
+        video_rec = VideoRecorder(
+            output_dir=video_dir,
+            cameras=video_camera,
+            fps=video_fps,
+        )
+        recorder = _CombinedRecorder([last_step_recorder, video_rec])
+    else:
+        recorder = last_step_recorder
+    demo_dir = output_directory / skill_type / f"demonstration_{scenario_index}"
     with closing_multiple(anzu_env, policy):
         env = GymEnvWrappingAnzuEnv(anzu_env, recorder)
         with closing_multiple(env):
@@ -316,8 +375,11 @@ def _evaluate_one_impl(
             if t_max is not None:
                 options["t_max"] = t_max
             collect_episode_gym(env, policy, seed=random_seed, options=options)
-        total_time = recorder.last_time_step.info["time"]
-        is_success = recorder.last_time_step.info["is_success"]
+        total_time = last_step_recorder.last_time_step.info["time"]
+        is_success = last_step_recorder.last_time_step.info["is_success"]
+        # Save policy metadata alongside the demonstration artifacts.
+        policy_metadata = policy.get_policy_metadata()
+        policy_metadata.save_json(str(demo_dir))
         return SingleEvaluationResult(
             skill_type=skill_type,
             scenario_index=scenario_index,
@@ -445,10 +507,17 @@ def _run(
     num_processes: int,
     server_uri: str,
     start_index: int = 0,
+    record_video: bool = False,
+    video_camera: list[str] | None = None,
+    video_fps: int = 10,
     # For unit testing only.
     t_max: float = None,
 ) -> EvaluationResults:
     """The implementation of main() after argparse finishes."""
+    # Create a timestamped subdirectory so successive runs don't overwrite
+    # each other's demonstration artifacts.
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    output_directory = output_directory / timestamp
     output_directory.mkdir(parents=True, exist_ok=True)
     evaluations = [
         dict(
@@ -457,6 +526,9 @@ def _run(
             scenario_index=scenario_index,
             server_uri=server_uri,
             t_max=t_max,
+            record_video=record_video,
+            video_camera=video_camera,
+            video_fps=video_fps,
         )
         for skill_type in skill_types
         for scenario_index in range(start_index, start_index + num_evaluations)
@@ -539,6 +611,30 @@ def main():
         metavar="ADDRESS:PORT",
         help="A URI of the format 'address:port' to indicate the address "
         "of the gRPC server (default: '%(default)s').",
+    )
+    parser.add_argument(
+        "--record_video",
+        action="store_true",
+        default=False,
+        help="Save an MP4 video for each evaluation. Requires: "
+        "pip install imageio imageio-ffmpeg",
+    )
+    parser.add_argument(
+        "--video_camera",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="Camera(s) to record. Can be repeated. Special values: "
+        "'mosaic' for a grid of all cameras, 'all' for every individual "
+        "camera. When omitted, defaults to 'mosaic'. "
+        "Example: --video_camera scene_left_0 --video_camera mosaic",
+    )
+    parser.add_argument(
+        "--video_fps",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Frame rate for the output video (default: %(default)s).",
     )
     args = parser.parse_args()
     _run(**vars(args))

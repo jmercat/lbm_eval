@@ -16,6 +16,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install system dependencies
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
@@ -98,15 +99,15 @@ RUN "${LBM_EVAL_VENV}/bin/pip" install /tmp/policy_interfaces && \
 RUN "${LBM_EVAL_VENV}/bin/pip" install \
     --find-links https://download.pytorch.org/whl/torch/ \
     --find-links https://download.pytorch.org/whl/torchvision/ \
-    "torch==2.6.0+cu126" \
-    "torchvision==0.21.0+cu126" \
-    "torchdata==0.9.0" \
+    "torch==2.8.0+cu126" \
+    "torchvision==0.23.0+cu126" \
+    "torchdata==0.11.0" \
     "accelerate>=1.2.0" \
     "pytorch-lightning>=1.9.0" \
     einops \
     numba \
     scipy \
-    "transformers==4.50.2" \
+    "transformers>=4.53.0" \
     "timm==0.9.10" \
     diffusers \
     hydra-core \
