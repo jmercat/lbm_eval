@@ -94,6 +94,10 @@ class EvaluationResults:
     elapsed_time: float = 0.0
     """The (wall clock) time spent so far for evaluation."""
 
+    max_sample_size_per_model: int | None = None
+    """Maximum number of rollouts per model per task for sequential statistical
+    testing.  Set via the ``MAX_SAMPLE_SIZE_PER_MODEL`` environment variable."""
+
     @property
     def num_requested_evaluations(self) -> int:
         return len(self.evaluations)
@@ -427,9 +431,14 @@ def evaluate_many(
     json_path = _get_json_path(output_directory)
     start_time = time.time()
 
+    # Read max_sample_size_per_model from environment if set.
+    mss_env = os.environ.get("MAX_SAMPLE_SIZE_PER_MODEL")
+    max_sample_size = int(mss_env) if mss_env is not None else None
+
     # Populate all pending evaluations.
     results = EvaluationResults(
         num_processes=num_processes,
+        max_sample_size_per_model=max_sample_size,
         evaluations=[
             SingleEvaluationResult(
                 skill_type=kwargs["skill_type"],
